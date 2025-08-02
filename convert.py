@@ -23,10 +23,18 @@ parser.add_argument("--camera", default="OPENCV", type=str)
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
 parser.add_argument("--magick_executable", default="", type=str)
+parser.add_argument("--gpu_index", default="0", type=str, help="GPU index to use (default: 0)")
 args = parser.parse_args()
 colmap_command = '"{}"'.format(args.colmap_executable) if len(args.colmap_executable) > 0 else "colmap"
 magick_command = '"{}"'.format(args.magick_executable) if len(args.magick_executable) > 0 else "magick"
 use_gpu = 1 if not args.no_gpu else 0
+
+# Set environment variables to force GPU usage
+if use_gpu:
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_index
+    print(f"Using GPU index: {args.gpu_index}")
+else:
+    print("Using CPU (GPU disabled)")
 
 if not args.skip_matching:
     os.makedirs(args.source_path + "/distorted/sparse", exist_ok=True)
@@ -38,6 +46,13 @@ if not args.skip_matching:
         --ImageReader.single_camera 1 \
         --ImageReader.camera_model " + args.camera + " \
         --SiftExtraction.use_gpu " + str(use_gpu)
+    
+    # Add GPU index parameter when using GPU
+    if use_gpu:
+        feat_extracton_cmd += " --SiftExtraction.gpu_index " + args.gpu_index
+        feat_extracton_cmd += " --SiftExtraction.max_image_size 3200"
+        feat_extracton_cmd += " --SiftExtraction.max_num_features 4096"
+    
     exit_code = os.system(feat_extracton_cmd)
     if exit_code != 0:
         logging.error(f"Feature extraction failed with code {exit_code}. Exiting.")
@@ -47,6 +62,11 @@ if not args.skip_matching:
     feat_matching_cmd = colmap_command + " exhaustive_matcher \
         --database_path " + args.source_path + "/distorted/database.db \
         --SiftMatching.use_gpu " + str(use_gpu)
+    
+    # Add GPU index parameter when using GPU
+    if use_gpu:
+        feat_matching_cmd += " --SiftMatching.gpu_index " + args.gpu_index
+    
     exit_code = os.system(feat_matching_cmd)
     if exit_code != 0:
         logging.error(f"Feature matching failed with code {exit_code}. Exiting.")
@@ -60,6 +80,13 @@ if not args.skip_matching:
         --image_path "  + args.source_path + "/input \
         --output_path "  + args.source_path + "/distorted/sparse \
         --Mapper.ba_global_function_tolerance=0.000001")
+    
+    # Add multi-threading for better performance
+    mapper_cmd += " --Mapper.num_threads 16"
+    mapper_cmd += " --Mapper.init_min_tri_angle 4"
+    mapper_cmd += " --Mapper.multiple_models 0"
+    mapper_cmd += " --Mapper.extract_colors 0"
+    
     exit_code = os.system(mapper_cmd)
     if exit_code != 0:
         logging.error(f"Mapper failed with code {exit_code}. Exiting.")
@@ -72,9 +99,13 @@ img_undist_cmd = (colmap_command + " image_undistorter \
     --input_path " + args.source_path + "/distorted/sparse/0 \
     --output_path " + args.source_path + "\
     --output_type COLMAP")
+
+# Add max image size for undistortion to prevent memory issues
+img_undist_cmd += " --max_image_size 2000"
+
 exit_code = os.system(img_undist_cmd)
 if exit_code != 0:
-    logging.error(f"Mapper failed with code {exit_code}. Exiting.")
+    logging.error(f"Image undistorter failed with code {exit_code}. Exiting.")
     exit(exit_code)
 
 files = os.listdir(args.source_path + "/sparse")
